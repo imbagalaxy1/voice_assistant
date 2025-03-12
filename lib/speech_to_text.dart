@@ -13,7 +13,7 @@ class VoiceAssistant extends StatefulWidget {
 class _VoiceAssistantState extends State<VoiceAssistant> {
   final SpeechToText _speechToText = SpeechToText();
   final DatabaseReference _dbDeviceRef = FirebaseDatabase.instance.ref('devices');
-  Map<String, String> _validAppliances = {};
+  Map<String, Map<String, String>> _validAppliances = {};
 
   bool _speechEnabled = false;
   String _wordsSpoken = "Say a command like 'Turn on the kitchen light'";
@@ -96,7 +96,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
     // Find matching appliances in the Map
     for (String appliance in _validAppliances.keys) {
       if (speech.contains(appliance.toLowerCase())) {
-        foundAppliances.add(appliance);
+        foundAppliances.add(_validAppliances[appliance]!["originalKey"]!);
       }
     }
 
@@ -131,10 +131,13 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
         setState(() {
           _validAppliances = {}; // Reset before updating
           data.forEach((key, value) {
-            String applianceName = key; // Extract device name
+            String applianceName = key.replaceAll("_", " "); // Extract device name
             String status = value["status"] ?? "Unknown"; // Extract status
 
-            _validAppliances[applianceName] = status; // Store as key-value pair
+            _validAppliances[applianceName] = {
+              "originalKey": key,
+              "status": status,
+            };
           });
         });
       }
@@ -168,7 +171,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                         : _speechEnabled
                         ? "Tap the microphone to start listening..."
                         : "Speech not available",
-                  style: TextStyle(fontSize: 20),
+                  style: TextStyle(fontSize: 18),
                 ),
               ),
         
@@ -260,7 +263,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                                     child: ListView(
                                       children: _validAppliances.entries.map((entry) {
                                         String appliance = entry.key;
-                                        String status = entry.value;
+                                        String status = entry.value["status"]!;
                                         return ListTile(
                                           title: Text(appliance),
                                           leading: Icon(
@@ -281,12 +284,11 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                                               Switch(
                                                 value: status == "ON",
                                                 onChanged: (bool newState) {
-                                                  String newStatus = newState ? "ON" : "OFF";
                                                   _toggleAppliance(appliance, newState);
         
                                                   // ✅ Update state inside modal
                                                   setModalState(() {
-                                                    _validAppliances[appliance] = newStatus;
+                                                    _validAppliances[appliance]![status] = newState ? "ON" : "OFF";
                                                   });
                                                 },
                                               ),
@@ -325,7 +327,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                               child: Column(
                                 children: _validAppliances.entries.map((entry) {
                                   String appliance = entry.key;
-                                  String status = entry.value;
+                                  String status = entry.value["status"]!;
                                   return ListTile(
                                     title: Text(appliance),
                                     leading: Icon(
@@ -374,7 +376,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
     // Update Firebase database
     _dbDeviceRef.child(appliance).set({"status": newStatus}).then((_) {
       setState(() {
-        _validAppliances[appliance] = newStatus; // Update UI
+        _validAppliances[appliance]!["status"] = newStatus; // Update UI
       });
     }).catchError((error) {
       print("❌ Error updating appliance: $error");
