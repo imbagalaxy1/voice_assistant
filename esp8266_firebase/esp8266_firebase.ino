@@ -3,25 +3,24 @@
 
 #include <ESP8266WiFi.h>
 #include <FirebaseESP8266.h>
+#include <WiFiManager.h>
 
-// Wi-Fi Credentials
-#define WIFI_SSID "Indicator1"
-#define WIFI_PASSWORD "Pass135791234."
+WiFiManager wm;
 
 // Firebase Credentials
 #define FIREBASE_HOST "voice-assistant-app-9fd53-default-rtdb.firebaseio.com"
 #define FIREBASE_AUTH "SFlkEZl1bpXizLln34eYY8GdmvZU4QsZIrpRWfQ8"
 
 // Relay Pins (Adjust as per your circuit)
-#define BATHROOM_LIGHT  5   // D1
-#define FAN             4   // D2
-#define AC             0   // D3
-#define KITCHEN_LIGHT   14  // D5
+#define BATHROOM_LIGHT  D1   // D1
+#define FAN             D2   // D2
+#define AC             D5   // D5
+#define KITCHEN_LIGHT   D6  // D6
 
 FirebaseConfig config;
 FirebaseAuth auth;
 FirebaseData firebaseData;
-FirebaseData stream; // 🔥 Corrected: Declare FirebaseData object for streaming
+FirebaseData stream;
 
 // Device Mapping (For easy loop processing)
 struct Device {
@@ -42,15 +41,17 @@ const int deviceCount = sizeof(devices) / sizeof(devices[0]);
 
 void setup() {
   Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(1000);
+  if (!wm.autoConnect("ESP32-Config", "password")) {
+    Serial.println("⚠️ Failed to connect. Restarting...");
+    Serial.println("Wifi connect failed");
+    Serial.println("Restarting...");
+    delay(3000);
+    ESP.restart();  // Try again
   }
-  
-  Serial.println("\nConnected to WiFi!");
+  Serial.println("Wi-Fi connected!");
+  Serial.println("Starting.....");
+  Serial.println("✅ Wi-Fi connected!");
+  Serial.println(WiFi.localIP());
 
   // Set Firebase config
   config.host = FIREBASE_HOST;
@@ -63,7 +64,7 @@ void setup() {
   // Initialize Relay Pins as OUTPUT
   for (int i = 0; i < deviceCount; i++) {
     pinMode(devices[i].pin, OUTPUT);
-    digitalWrite(devices[i].pin, LOW); // Start OFF
+    digitalWrite(devices[i].pin, HIGH); // Start OFF, HIGH since active low
   }
 
   // Start Firebase Streaming Listener
@@ -107,7 +108,7 @@ void loop() {
 
             // 🔥 Log to Firebase
             logToFirebase(logMessage);
-            digitalWrite(devices[i].pin, (newStatus == "ON") ? HIGH : LOW);
+            digitalWrite(devices[i].pin, (newStatus == "ON") ? LOW : HIGH);
           }
         } else {
           String errorMsg = "Error reading " + String(devices[i].name) + ": " + firebaseData.errorReason();
@@ -119,10 +120,20 @@ void loop() {
     String errorMsg = "Firebase stream failed: " + stream.errorReason();
     logToFirebase(errorMsg);
   }
+
+  for (int i = 0; i < deviceCount; i++) {
+    if (devices[i].status == "ON") {  // Only check if it should be ON
+      int targetState = LOW; // ON state for active LOW relay
+      if (digitalRead(devices[i].pin) != targetState) { // Relay mismatch
+        logToFirebase("❌ " + String(devices[i].name) + " relay failed, retrying...");
+        digitalWrite(devices[i].pin, targetState); // Retry setting the relay
+      }
+    }
+  }
 }
 
 void logToFirebase(String message) {
-  Serial.println(message); // Print to Serial Monitor
+  Serial.println(message); // println to Serial Monitor
 
   // 🔥 Save the latest log
   Firebase.setString(firebaseData, "/logs/latest", message);
@@ -130,4 +141,26 @@ void logToFirebase(String message) {
   // 🔥 Save log history with timestamp
   String timePath = "/logs/history/" + String(millis()); // Use millis() as timestamp
   Firebase.setString(firebaseData, timePath, message);
+}
+
+void checkWiFiAutoReconnect() {
+  if (!Firebase.ready()) {
+    Serial.println("Wi-Fi lost,");
+    Serial.println("reconnecting...");
+    WiFi.begin();  // Uses saved credentials
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+      delay(500);
+      Serial.println(".");
+    }
+    if (Firebase.ready()) {
+      Serial.println("Reconnected to Wi-Fi");
+    } else {
+      Serial.println("Failed to reconnect.");
+      if(wm.startConfigPortal("ESP32-Config", "password")){
+        Serial.println("Opening portal.....");
+        Serial.println("Connected via portal");
+      }
+    }
+  }
 }
