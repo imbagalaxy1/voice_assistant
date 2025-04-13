@@ -62,61 +62,133 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
 
   // Send valid command to Firebase
   void sendToFirebase(String command) {
-    List<String> parts = command.split(":");
-    if (parts.length != 2) return;
+    // Split multiple action parts: e.g., ["ON:kitchen_light,bathroom_light", "OFF:AC,fan"]
+    List<String> commandParts = command.split(' ');
 
-    String action = parts[0]; // "ON" or "OFF"
-    List<String> appliances = parts[1].split(",");
+    for (String part in commandParts) {
+      List<String> segments = part.split(':');
+      if (segments.length != 2) continue;
 
-    for (String appliance in appliances) {
-      _dbDeviceRef.child(appliance).set({"status": action});
+      String action = segments[0]; // "ON" or "OFF"
+      List<String> appliances = segments[1].split(',');
+
+      for (String appliance in appliances) {
+        _dbDeviceRef.child(appliance).set({"status": action});
+      }
     }
   }
 
-  // Process and validate the spoken command
   String? _processCommand(String speech) {
     speech = speech.toLowerCase().trim();
     print('Processed speech: $speech');
     print('Appliance: $_validAppliances');
 
-    int turnOnCount = 0;
-    int turnOffCount = 0;
-    List<String> foundAppliances = [];
+    // Pattern to match each command block
+    RegExp blockPattern = RegExp(
+      r"(turn on|turn off)\s+((?:(?!turn on|turn off).)*?)(?:\s+except\s+((?:(?!turn on|turn off).)*))?(?=turn on|turn off|$)",
+      caseSensitive: false,
+      dotAll: true,
+    );
 
-    // Detect commands more flexibly
-    if (speech.contains("turn on")) turnOnCount = 1;
-    if (speech.contains("turn off")) turnOffCount = 1;
+    Iterable<RegExpMatch> blocks = blockPattern.allMatches(speech);
+    List<String> foundAppliancesOn = [];
+    List<String> foundAppliancesOff = [];
 
-    // Ensure only one valid command ("turn on" OR "turn off")
-    if (turnOnCount + turnOffCount != 1) {
-      print("❌ Invalid command: Both 'turn on' and 'turn off' detected or none found.");
+    if (blocks.isEmpty) {
+      _showConfirmationDialog("No valid command detected. Please say 'turn on' or 'turn off' followed by an appliance name.");
       return null;
     }
 
-    // Find matching appliances in the Map
-    for (String appliance in _validAppliances.keys) {
-      if (speech.contains(appliance.toLowerCase())) {
-        foundAppliances.add(_validAppliances[appliance]!["originalKey"]!);
+    for (var match in blocks) {
+      String command = match.group(1)!.trim(); // "turn on" or "turn off"
+      String targetsRaw = match.group(2)?.trim() ?? "";
+      String excludeRaw = match.group(3)?.trim() ?? "";
+
+      print("\n🧱 Processing Block: [$command] [$targetsRaw] [except $excludeRaw]");
+
+      bool isTurnOn = command == "turn on";
+      bool allDevices = targetsRaw.contains("all devices") || targetsRaw.contains("all device");
+
+      for (String appliance in _validAppliances.keys) {
+        String applianceLower = appliance.toLowerCase();
+        String originalKey = _validAppliances[appliance]!["originalKey"]!;
+        String currentStatus = _validAppliances[appliance]!["status"]!;
+
+        bool isExcluded = excludeRaw.contains(applianceLower);
+        bool isTargeted = targetsRaw.contains(applianceLower);
+
+        // Handle all devices
+        if (allDevices && !isExcluded) {
+          if (isTurnOn && currentStatus != "ON") {
+            foundAppliancesOn.add(originalKey);
+            print('✅ Turn ON Appliance (all): $originalKey');
+          } else if (!isTurnOn && currentStatus != "OFF") {
+            foundAppliancesOff.add(originalKey);
+            print('✅ Turn OFF Appliance (all): $originalKey');
+          }
+        }
+
+        // Handle specific devices
+        if (!allDevices && isTargeted && !isExcluded) {
+          if (isTurnOn && currentStatus != "ON") {
+            foundAppliancesOn.add(originalKey);
+            print('✅ Turn ON Appliance: $originalKey');
+          } else if (!isTurnOn && currentStatus != "OFF") {
+            foundAppliancesOff.add(originalKey);
+            print('✅ Turn OFF Appliance: $originalKey');
+          }
+        }
+
+        if (isExcluded && isTargeted) {
+          print('❌ Excluding appliance: $originalKey');
+        }
       }
     }
 
-    // Ensure at least one appliance was found
-    if (foundAppliances.isEmpty) {
-      print("❌ No matching appliances found.");
+    if (foundAppliancesOn.isEmpty && foundAppliancesOff.isEmpty) {
+      print("❌ No matching appliances found or appliances are already in desired states");
       return null;
     }
 
-    // Determine action
-    String action = turnOnCount == 1 ? "ON" : "OFF";
+    print("✅ Matched Appliances (ON): $foundAppliancesOn");
+    print("✅ Matched Appliances (OFF): $foundAppliancesOff");
 
-    // Debugging
-    print("✅ Detected Action: $action");
-    print("✅ Matched Appliances: $foundAppliances");
+    String result = "";
+    if (foundAppliancesOn.isNotEmpty) {
+      result += "ON:${foundAppliancesOn.join(',')}";
+    }
+    if (foundAppliancesOff.isNotEmpty) {
+      if (result.isNotEmpty) result += " ";
+      result += "OFF:${foundAppliancesOff.join(',')}";
+    }
 
-    // Return formatted command
-    return "$action:${foundAppliances.join(',')}";
+    return result;
   }
 
+  void _showConfirmationDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text("Confirm Command"),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text("Cancel"),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _startListening(); // Restart listening for a clearer command
+              },
+              child: Text("Retry"),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   // Fetch valid appliances from Firebase RTDB
   void fetchAppliances() {
@@ -263,6 +335,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                                     child: ListView(
                                       children: _validAppliances.entries.map((entry) {
                                         String appliance = entry.key;
+                                        String applianceKey = entry.value["originalKey"]!;
                                         String status = entry.value["status"]!;
                                         return ListTile(
                                           title: Text(appliance),
@@ -284,12 +357,7 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
                                               Switch(
                                                 value: status == "ON",
                                                 onChanged: (bool newState) {
-                                                  _toggleAppliance(appliance, newState);
-        
-                                                  // ✅ Update state inside modal
-                                                  setModalState(() {
-                                                    _validAppliances[appliance]![status] = newState ? "ON" : "OFF";
-                                                  });
+                                                  _toggleAppliance(applianceKey, newState, setModalState);
                                                 },
                                               ),
                                             ],
@@ -370,13 +438,27 @@ class _VoiceAssistantState extends State<VoiceAssistant> {
     );
   }
 
-  void _toggleAppliance(String appliance, bool newState) {
+  void _toggleAppliance(String applianceKey, bool newState, Function setModalState) {
     String newStatus = newState ? "ON" : "OFF";
 
     // Update Firebase database
-    _dbDeviceRef.child(appliance).set({"status": newStatus}).then((_) {
+    _dbDeviceRef.child(applianceKey).set({"status": newStatus}).then((_) {
+      // Update local state
       setState(() {
-        _validAppliances[appliance]!["status"] = newStatus; // Update UI
+        _validAppliances.forEach((key, value) {
+          if (value["originalKey"] == applianceKey) {
+            _validAppliances[key]!["status"] = newStatus;
+          }
+        });
+      });
+
+      // Update modal state as well
+      setModalState(() {
+        _validAppliances.forEach((key, value) {
+          if (value["originalKey"] == applianceKey) {
+            _validAppliances[key]!["status"] = newStatus;
+          }
+        });
       });
     }).catchError((error) {
       print("❌ Error updating appliance: $error");
